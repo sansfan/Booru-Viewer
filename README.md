@@ -1,2 +1,2 @@
-# Booru-Viewer
-Image Browser for Booru sites
+# Booru Viewer, a Tampermonkey script for viewing images from Booru sites
+

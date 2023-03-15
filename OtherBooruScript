@@ -1,0 +1,511 @@
+	// ==UserScript==
+	// @name         Gelbooru Viewer (attempting to make it compatible with similar "booru" sites that have use the same website template)
+	// @namespace    http://tampermonkey.net/
+	// @version      0.1
+	// @description  Instead of using the thumbnails to get image links, get images from the API, so you don't have to
+	// @author       Not Me
+	// @match        https://gelbooru.com/index.php?page=post&s=list&tags=*
+    // @match        https://rule34.xxx/index.php?page=post&s=list&tags=*
+    // @match        https://realbooru.com/index.php?page=post&s=list&tags=*
+    // @match        https://danbooru.donmai.us/index.php?page=post&s=list&tags=*
+	// @icon         https://www.google.com/s2/favicons?sz=64&domain=tampermonkey.net
+	// @grant        GM_addStyle
+	// @run-at       document-end
+	// ==/UserScript==
+
+	(function() {
+		'use strict';
+
+
+			//TO DO:
+			//Add author, character, score, and (artistic) work information to tag list by searching XML for the relevant tags
+            //Make the XML parser efficient. Have a list of start terms, like "<auth" and end terms, like "</auth" and a for loop goes through, and fills a buffer with a characters as it goes through the XML, and writes the strings to a buffer when it detects one between the start and end characters.
+
+            //ISSUES:
+
+
+			//solved problems:
+			//tag system now works correctly
+			//added video
+            var siteIndex = 0; //the current site in the sites list
+            var sites = ["https://gelbooru.com", "https://rule34.xxx", "https://realbooru.com"]; //list of sites and various attributes like api URL, base URL, and names of classes & ids to remove
+            var baseURL;
+            for (let i = 0; i < sites.length; i++ ){
+                if (document.URL.includes(sites[i])) {
+                    baseURL = sites[i];
+                    siteIndex = i;
+                }
+            }
+
+            if (baseURL == "https://gelbooru.com") {
+			document.getElementsByTagName("section")[0].remove();
+			document.getElementsByTagName("footer")[0].remove();
+			document.getElementById("myTopnav").remove();
+			document.getElementsByClassName("navSubmenu")[0].remove();
+            document.querySelector("img").remove();
+			GM_addStyle("a {padding: 5px; display:inline-block} #page-count {margin: auto; }#container {min-height: 0vh} img {height: 650px; margin: auto; display: block} video {height: 650px; margin: auto; display: block}");
+			var main = document.getElementsByTagName("main")[0];
+            main.remove();
+            }
+            else if (baseURL == "https://rule34.xxx") {
+                document.getElementsByClassName("content")[0].remove();
+                document.getElementById("header").remove();
+                document.getElementById("tag-sidebar").parentElement.remove();
+                GM_addStyle("a {padding: 5px; display:inline-block} #page-count {margin: auto; }#container {min-height: 0vh} img {height: 650px; margin: auto; display: block} video {height: 650px; margin: auto; display: block}");
+
+            }
+            else if (baseURL == "https://realbooru.com") {
+                document.getElementsByClassName("container-fluid")[0].remove();
+                document.getElementsByClassName("container-fluid")[1].remove();
+                GM_addStyle("a {padding: 5px; display:inline-block} #page-count {margin: auto; }#container {min-height: 0vh} img {height: 650px; margin: auto; display: block} video {height: 650px; margin: auto; display: block}");
+
+            }
+
+			var imgArr = [];
+			//var images = main.getElementsByTagName("article");
+			var currentImage = 0;
+
+            var pid = 0;
+            var extensions = ["png", "jpg", "jpeg", "gif", "mp4", "webm"];
+            var latestViewed = 0; //stores the greatest number of currentImage, so only the images that the user views are stored when saved
+            var collectionMode = false; //if collection mode or just search mode
+            var limitReached = false; //if all images have been loaded yet or not
+            //var searchBar = document.getElementById("tags-search");
+            var searchBar = document.getElementsByName("tags")[0];
+            var searchTerms = searchBar.value.split(" ");
+            var loadingImage = false; //if an image is current being loaded, set to false whenever image is done loading
+            var preloadedImages = Array.apply(null, Array(1000)).map(function () {}); //generates array with size of 1000 with all null values
+            if (localStorage.getItem(searchBar.value)) {
+                currentImage = parseInt(localStorage.getItem(searchBar.value));
+            }
+
+
+
+            //construct the url for the Gelbooru API, just adding the search terms to default search thing
+function getData(num) {//gets xml file and adds data to arrays
+           //var apiURL = "https://api.rule34.xxx";
+           var apiURL = baseURL;
+           var reqUrl = apiURL + "/index.php?page=dapi&s=post&q=index&tags=";
+
+            for (var i = 0; i < searchTerms.length; i++) {
+                reqUrl += searchTerms[i] + "+";
+            }
+            reqUrl += "&pid=" + num;
+
+            console.log(reqUrl);
+            var req = new XMLHttpRequest();
+            req.open('GET', reqUrl, false);
+            req.send(null);
+            if(req.status == 200) {
+                 //log this if need be
+            }
+
+
+            var response = req.response;
+
+            var indexes = []
+            var tempIndex = -1;
+
+            //var indexTerm = "<file_url>";
+            var indexTerm = "file_url=\"";
+            while ((tempIndex = response.indexOf(indexTerm, tempIndex+1)) != -1){
+               indexes.push(tempIndex + indexTerm.length);
+            }
+
+            var tagIndexes = []
+            var tempTagIndex = -1;
+            //var tagIndexTerm = "<tags>";
+            var tagIndexTerm = "tags=\"";
+            while ((tempTagIndex = response.indexOf(tagIndexTerm, tempTagIndex+1)) != -1){
+                tagIndexes.push(tempTagIndex + tagIndexTerm.length);
+            }
+
+
+
+            for (var i = 0; i < indexes.length; i++) {
+                let currentChar = indexes[i];
+                let linkConstructor = "";
+                let tagConstructor = "";
+                let actualCharacterInString;
+                //let terminatingCharacter = "<";
+                let terminatingCharacter = "\"";
+                while ((actualCharacterInString = response.charAt(currentChar)) != terminatingCharacter) {
+                    currentChar++;
+                    linkConstructor += actualCharacterInString;
+                }
+                actualCharacterInString = "";
+                currentChar = tagIndexes[i];
+                while ((actualCharacterInString = response.charAt(currentChar)) != terminatingCharacter) {
+                    currentChar++;
+                    tagConstructor += actualCharacterInString;
+                }
+
+                imgArr.push([]);
+                imgArr[imgArr.length - 1].push(linkConstructor);
+
+                imgArr[imgArr.length - 1].push(tagConstructor.split(" "));
+            }
+            }
+            getData(0);
+            let multipleOfHundred = 1;
+            while (currentImage > imgArr.length) {
+                let currentLength = imgArr.length;
+                getData(multipleOfHundred);
+                if (imgArr.length == currentLength) {
+                    break;
+                }
+                multipleOfHundred++;
+            }
+
+			var img = new Image();
+
+            function imgOnload() {
+                loadingImage = false;
+            }
+            //var nextImage = new Image();; //hacky fix, loads the next image
+            //nextImage.src = imgArr[0][0];
+            var swap = 0;
+            //img.onload = function() {
+            //    nextImage.src = imgArr[currentImage + 1][0];
+            //}
+            //nextImage.onload = function() {
+            //    img.src = imgArr[currentImage + 1][0];
+            //}
+            //nextImage.style.display = "none";
+			var vid = document.createElement("video");
+			vid.controls = true; //adds video controls (the video player)
+			vid.loop = true; //loops the video
+			vid.autoplay = true; //autoplay only works when muted
+			vid.muted = true;
+			var index = 0;
+			var vidIndex = 0
+
+
+
+            var extensionIndex = 0;
+
+
+
+
+
+
+			document.body.appendChild(img);
+            //document.body.appendChild(nextImage);
+			document.body.appendChild(vid);
+
+
+			var pageCount = document.createElement("p");
+			pageCount.setAttribute("id", "page-count");
+			pageCount.innerHTML = (currentImage + 1) + "/" + imgArr.length;
+			document.body.appendChild(pageCount);
+
+			//tag list
+			var tagListContainer = document.createElement("div");
+			tagListContainer.id = "tags";
+			for (var i = 0; i < imgArr[currentImage][1].length; i++) {
+				var tag = document.createElement("a");
+				tag.href = "https://gelbooru.com/index.php?page=post&s=list&tags=" + imgArr[currentImage][1][i];
+
+				tag.innerHTML = imgArr[currentImage][1][i];
+				tagListContainer.appendChild(tag);
+			}
+			document.body.appendChild(tagListContainer);
+
+
+
+
+
+
+
+            //saved string parsing container
+            var stringInput = document.createElement("input");
+
+
+            document.body.appendChild(stringInput);
+
+
+            var stringOutput = document.createElement("p");
+            document.body.appendChild(stringOutput);
+
+
+
+
+
+            var deleted = []; //stores deleted so redo is possible
+			document.addEventListener("keydown", function(e) {
+				var updateImage = true;
+
+                if (document.activeElement.tagName == "INPUT") {
+                    return;
+                }
+
+				if (e.code === "ArrowRight") {
+					currentImage++;
+                    if (currentImage > imgArr.length) {
+                            pid++;
+                            getData(pid);
+                    }
+
+				}
+				else if (e.code === "ArrowLeft") {
+					if (currentImage != 0) {
+						currentImage--;
+					}
+				}
+				else if (e.code == "KeyM") {
+					vid.muted = !vid.muted;
+				}
+                else if (e.code == "KeyC") { //turns into collection mode
+                    let g = localStorage.getItem("g");
+                    parseSavedString(g);
+                    collectionMode = true;
+                    preloadedImages = Array.apply(null, Array(1000)).map(function () {}); //resets preloaded array
+
+                }
+
+                else if (e.code == "ArrowUp") {//adds only current image to collection
+                    e.preventDefault(); //prevents scrolling
+                    if (collectionMode) {
+                        if (deleted.length != 0) {
+                              let popped = deleted.pop();
+                              if (popped.length != 0) {
+                                   imgArr.splice(currentImage, 0, popped[0]);
+                              }
+                        }
+                    }
+
+                    else {
+                        let imageLink = imgArr[currentImage][0].split("/images/")[1];
+                        let g = localStorage.getItem("g");
+
+                        let imageLinkSplit = imageLink.split(".");
+                        let imageID = imageLinkSplit[0]; //storing id and extension separately for good reason
+                        let imageExtension = imageLinkSplit[1]; //extension array will be defined as so: [png, jpg, jpeg, gif, mp4, webm]
+                        let outputString = imageID + " " + extensions.indexOf(imageExtension) + " " + imgArr[currentImage][1];
+                        if (!g.split("~").includes(outputString)) {
+
+                               localStorage.setItem("g", g + outputString + "~");
+                        }
+                    }
+
+                }
+                else if (e.code == "KeyR") {//replaces collection with all images (use only in collection mode basically)
+                    let outputString = "";
+                    let outputExtensions = "";
+                    for (var i = 0; i < imgArr.length; i++) {
+                        let imageLink = imgArr[i][0].split("/images/")[1];
+                        let imageLinkSplit = imageLink.split(".");
+                        let imageID = imageLinkSplit[0]; //storing id and extension separately for good reason
+                        let imageExtension = imageLinkSplit[1]; //extension array will be defined as so: [png, jpg, jpeg, gif, mp4, webm]
+                        outputString += imageID + " " + extensions.indexOf(imageExtension) + " " + imgArr[i][1] + "~";
+                    }
+                    localStorage.setItem("g", outputString);
+
+                }
+                else if (e.code == "ArrowDown") {
+                    e.preventDefault(); //prevent down arrow from scrolling
+                    let pushed = imgArr.splice(currentImage, 1);
+                    preloadedImages.splice(currentImage, 1);
+                    if (collectionMode) {
+
+                          deleted.push(pushed); //removes element and shifts array, this is the "blacklist" function
+
+                    }
+                }
+                else if (e.code == "KeyX") {//shuffles array (temporarily) and doesn't effect localstorage, only current imgLinks
+                    shuffle(imgArr);
+                    preloadedImages = Array.apply(null, Array(1000)).map(function () {}); //removes array
+
+                }
+                else if (e.code == "Backspace") { //goes back to first image
+                     currentImage = 0;
+                     latestViewed = 0; //change this later, think about the best way to "save" progress in image viewing
+                }
+
+                else if (e.code == "KeyS") {//adds all previous images to "collection"
+                    let outputString = "";
+                    let outputExtensions = "";
+                    for (var i = 0; i < latestViewed; i++) {
+                        let imageLink = imgArr[i][0].split("/images/")[1];
+                        let imageLinkSplit = imageLink.split(".");
+                        let imageID = imageLinkSplit[0]; //storing id and extension separately for good reason
+                        let imageExtension = imageLinkSplit[1]; //extension array will be defined as so: [png, jpg, jpeg, gif, mp4, webm]
+                        outputString += imageID + " " + extensions.indexOf(imageExtension) + " " + imgArr[i][1] + "~";
+                    }
+                    localStorage.setItem("g", localStorage.getItem("g") + outputString);
+
+                }
+                else if (e.code == "KeyT") { // test/debug key
+                    let image = new Image();
+                    image.src = imgArr[currentImage + 1][0];
+                    setTimeout(function() {document.querySelector("img").replaceWith(image)}, 1000);
+                }
+
+                else {
+                    updateImage = false;
+                }
+				if (updateImage) {
+					vid.muted = true; //prevent audio from leeching to images
+                    if (currentImage > latestViewed) {latestViewed = currentImage;}
+					let isVideo = false;
+                    let extVid = imgArr[currentImage][0].split(".")[3];
+                    let ext = imgArr[currentImage][0].split(".")[4];
+                    if (extVid == "mp4" || extVid == "webm") {
+                        isVideo = true;
+                        ext = extVid;
+                    }
+
+                    let imgElement = document.querySelector("img");
+
+					if (isVideo) { //maybe optimize this, instead of changing the DOM, check to see if the string is empty, so you don't have to modify DOM every time
+						imgElement.style.display = "none";
+						vid.style.display = "block";
+						vid.src = imgArr[currentImage][0];
+						vid.play();
+
+					}
+					else {
+
+						vid.style.display = "none";
+						imgElement.style.display = "block";
+                        if (preloadedImages[currentImage]) {
+
+                            imgElement.replaceWith(preloadedImages[currentImage]);
+
+
+                            console.log(preloadedImages);
+                        }
+                        else {
+                            let tempImg = new Image();
+                            loadingImage = true;
+						    tempImg.src = imgArr[currentImage][0];
+
+                            imgElement.replaceWith(tempImg);
+                            preloadedImages[currentImage] = tempImg;
+
+
+                            console.log("tradway");
+                        }
+                        document.querySelector("img").onload = imgOnload();
+
+
+
+                                    //only for realBooru
+            if (document.URL.includes("realbooru")) {
+            document.querySelector("img").onerror = function() {
+ 						document.querySelector("img").style.display = "none";
+						vid.style.display = "block";
+						vid.src = imgArr[currentImage][0].replace("jpeg", "webm");
+						vid.play();
+            }
+
+            }
+
+
+
+
+
+
+                       // console.log(nextImage);
+					}
+
+
+
+					pageCount.innerHTML = (currentImage + 1) + "/" + imgArr.length;
+
+					var tagReference = document.getElementById("tags");
+
+
+					tagReference.innerHTML = "";
+					for (let i = 0; i < imgArr[currentImage][1].length; i++) {
+						let tag = document.createElement("a");
+						tag.href = "https://gelbooru.com/index.php?page=post&s=list&tags=" + imgArr[currentImage][1][i];
+
+
+						tag.innerHTML = imgArr[currentImage][1][i];
+						tagReference.appendChild(tag);
+					}
+
+					//debug
+					// end debug
+
+                    //storing last viewed photo in localstorage
+                    localStorage.setItem(searchBar.value, currentImage);
+
+				}
+
+			});
+            function parseSavedString(str) {
+                currentImage = 0;
+                imgArr = [];
+                let posts = str.split("~");
+                for (let i = 0; i < posts.length - 1; i++) { //minus one because empty array element due to extra ~ at the end
+                    let temp = posts[i].split(" ");
+                    let id = temp[0];
+                    let ext = extensions[parseInt(temp[1])];
+                    let tags = temp[2];
+                    imgArr.push([]);
+                    if (ext === "mp4" || ext === "webm") {
+                        imgArr[imgArr.length - 1].push("https://api-cdn-mp4.rule34.xxx/images/" + id + "." + ext); //TO DO: change url based on current site
+                    }
+                    else {
+                        imgArr[imgArr.length - 1].push("https://api-cdn.rule34.xxx/images/" + id + "." + ext);
+
+                    }
+                    imgArr[imgArr.length - 1].push(tags.split(","));
+
+                }
+            }
+            function shuffle(arr) {
+               let i = arr.length, j, temp;
+               while(--i > 0){
+                   j = Math.floor(Math.random()*(i+1));
+                   temp = arr[j];
+                   arr[j] = arr[i];
+                   arr[i] = temp;
+               }
+            }
+
+            function saveToStorage(arr) {
+
+            }
+            var focused = true;
+            var focusedTimer = 0; //how long the tab hasn't been in focus, in milliseconds, if too long, start deloading images to free ram
+            function preloadImages() {
+                console.log(loadingImage);
+                if (!document.hasFocus()) {
+                    console.log("not in focus");
+                    focusedTimer += 100;
+                    //free image array memory if tab inactive too long
+                    if (focusedTimer > 10000) {
+                        preloadedImages = []; //make array null, garbage collector will collect eventually and free memory
+                    }
+                    return;}
+                else {
+                    focusedTimer = 0;
+                    preloadedImages = Array.apply(null, Array(1000)).map(function () {}); //reset array
+                }
+                if (!loadingImage) {
+                   let addedIndex = 1;
+                   while ((currentImage + addedIndex) != imgArr.length) {
+                       addedIndex++;
+                       if (!preloadedImages[currentImage + addedIndex]) {
+                           break;
+                       }
+                   }
+                   if ((currentImage + addedIndex) == imgArr.length) {
+                       return;
+                   }
+
+                   let plImg = new Image();
+                   if (!imgArr[currentImage + addedIndex]) {return;} //if it doesnt exist just return
+                   plImg.src = imgArr[currentImage + addedIndex][0];
+
+                   preloadedImages.splice(currentImage + addedIndex, 0, plImg);
+                }
+
+            }
+
+           setInterval(preloadImages, 100);
+
+	})();
